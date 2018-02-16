@@ -5,19 +5,17 @@
 #include <iostream>
 #include <thread>
 #include <vector>
+
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
+#include "spline.h"
+#include "transforms.h"
 
 using namespace std;
 
 // for convenience
 using json = nlohmann::json;
-
-// For converting back and forth between radians and degrees.
-constexpr double pi() { return M_PI; }
-double deg2rad(double x) { return x * pi() / 180; }
-double rad2deg(double x) { return x * 180 / pi(); }
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -32,135 +30,6 @@ string hasData(string s) {
     return s.substr(b1, b2 - b1 + 2);
   }
   return "";
-}
-
-double distance(double x1, double y1, double x2, double y2)
-{
-	return sqrt((x2-x1)*(x2-x1)+(y2-y1)*(y2-y1));
-}
-int ClosestWaypoint(double x, double y, const vector<double> &maps_x, const vector<double> &maps_y)
-{
-
-	double closestLen = 100000; //large number
-	int closestWaypoint = 0;
-
-	for(int i = 0; i < maps_x.size(); i++)
-	{
-		double map_x = maps_x[i];
-		double map_y = maps_y[i];
-		double dist = distance(x,y,map_x,map_y);
-		if(dist < closestLen)
-		{
-			closestLen = dist;
-			closestWaypoint = i;
-		}
-
-	}
-
-	return closestWaypoint;
-
-}
-
-int NextWaypoint(double x, double y, double theta, const vector<double> &maps_x, const vector<double> &maps_y)
-{
-
-	int closestWaypoint = ClosestWaypoint(x,y,maps_x,maps_y);
-
-	double map_x = maps_x[closestWaypoint];
-	double map_y = maps_y[closestWaypoint];
-
-	double heading = atan2((map_y-y),(map_x-x));
-
-	double angle = fabs(theta-heading);
-  angle = min(2*pi() - angle, angle);
-
-  if(angle > pi()/4)
-  {
-    closestWaypoint++;
-  if (closestWaypoint == maps_x.size())
-  {
-    closestWaypoint = 0;
-  }
-  }
-
-  return closestWaypoint;
-}
-
-// Transform from Cartesian x,y coordinates to Frenet s,d coordinates
-vector<double> getFrenet(double x, double y, double theta, const vector<double> &maps_x, const vector<double> &maps_y)
-{
-	int next_wp = NextWaypoint(x,y, theta, maps_x,maps_y);
-
-	int prev_wp;
-	prev_wp = next_wp-1;
-	if(next_wp == 0)
-	{
-		prev_wp  = maps_x.size()-1;
-	}
-
-	double n_x = maps_x[next_wp]-maps_x[prev_wp];
-	double n_y = maps_y[next_wp]-maps_y[prev_wp];
-	double x_x = x - maps_x[prev_wp];
-	double x_y = y - maps_y[prev_wp];
-
-	// find the projection of x onto n
-	double proj_norm = (x_x*n_x+x_y*n_y)/(n_x*n_x+n_y*n_y);
-	double proj_x = proj_norm*n_x;
-	double proj_y = proj_norm*n_y;
-
-	double frenet_d = distance(x_x,x_y,proj_x,proj_y);
-
-	//see if d value is positive or negative by comparing it to a center point
-
-	double center_x = 1000-maps_x[prev_wp];
-	double center_y = 2000-maps_y[prev_wp];
-	double centerToPos = distance(center_x,center_y,x_x,x_y);
-	double centerToRef = distance(center_x,center_y,proj_x,proj_y);
-
-	if(centerToPos <= centerToRef)
-	{
-		frenet_d *= -1;
-	}
-
-	// calculate s value
-	double frenet_s = 0;
-	for(int i = 0; i < prev_wp; i++)
-	{
-		frenet_s += distance(maps_x[i],maps_y[i],maps_x[i+1],maps_y[i+1]);
-	}
-
-	frenet_s += distance(0,0,proj_x,proj_y);
-
-	return {frenet_s,frenet_d};
-
-}
-
-// Transform from Frenet s,d coordinates to Cartesian x,y
-vector<double> getXY(double s, double d, const vector<double> &maps_s, const vector<double> &maps_x, const vector<double> &maps_y)
-{
-	int prev_wp = -1;
-
-	while(s > maps_s[prev_wp+1] && (prev_wp < (int)(maps_s.size()-1) ))
-	{
-		prev_wp++;
-	}
-
-	int wp2 = (prev_wp+1)%maps_x.size();
-
-	double heading = atan2((maps_y[wp2]-maps_y[prev_wp]),(maps_x[wp2]-maps_x[prev_wp]));
-	// the x,y,s along the segment
-	double seg_s = (s-maps_s[prev_wp]);
-
-	double seg_x = maps_x[prev_wp]+seg_s*cos(heading);
-	double seg_y = maps_y[prev_wp]+seg_s*sin(heading);
-
-	double perp_heading = heading-pi()/2;
-
-	double x = seg_x + d*cos(perp_heading);
-	double y = seg_y + d*sin(perp_heading);
-
-	return {x,y};
-
 }
 
 int main() {
@@ -239,8 +108,119 @@ int main() {
 
           	json msgJson;
 
-          	vector<double> next_x_vals;
-          	vector<double> next_y_vals;
+          	//Define all flags and constats
+            int LANE_ID = 1; 
+            double REF_V = 40/2.23694; //Reference velocity in m/s
+            int N_ANCHORS = 5; 
+            int ANCHOR_SPACING = 30;
+            double SPLINE_X_TARGET = 30; //Distance in meters that the path looks out to
+            double SPLINE_X_INCREMENT = 0;
+            int N_SPLINE_POINTS = 50;
+            double TIME_INTERVAL = 0.02;
+
+            //Define all variables
+            vector<double> next_x_vals; //holds the next global x values
+          	vector<double> next_y_vals; //holds the next global y values
+            int prev_size = previous_path_x.size(); //size of the previous path returned from the simulator
+            double spline_y_target;
+            double path_horizon;
+
+            //Start the path with all the remaining points from the previous path
+            for(int i=0; i<prev_size; ++i){
+              next_x_vals.push_back(previous_path_x[i]);
+              next_y_vals.push_back(previous_path_y[i]);
+            }
+
+            //Declare anchor points for use in spline
+            vector<double> anchor_ptsx;
+            vector<double> anchor_ptsy;
+
+            //Declare spline
+            tk::spline spline_traj;
+
+            //Capture two points to use as anchor points for spline generation
+            //Capture the current state of the ego vehicle to use as the reference state
+            double ref_x = car_x;
+            double ref_y = car_y;
+            double ref_yaw = deg2rad(car_yaw);
+            double ref_s = car_s;
+
+            //Define variables to hold the state previous to the reference state
+            double prev_x;
+            double prev_y;
+
+            //cout<<"Previous path size is: "<<prev_size<<endl;
+
+            //Create an additional point based on current reference state if the previous path has one point left
+            if (prev_size < 2){
+              prev_x = ref_x - cos(ref_yaw);
+              prev_y = ref_y - sin(ref_yaw);
+            }
+            //Otherwise use the last two points available in the previous path
+            else {
+              /*for (int i=0; i<4; ++i){
+                cout<<"Previous path point "<<i+1<<": ("<<previous_path_x[prev_size-1-i]<<","<<previous_path_y[prev_size-1-i]<<")\n";
+              }*/
+              ref_x = previous_path_x[prev_size-1];
+              ref_y = previous_path_y[prev_size-1];
+              ref_yaw = atan2(ref_y-prev_y, ref_x-prev_x);
+              prev_x = previous_path_x[prev_size-3];
+              prev_y = previous_path_y[prev_size-3];
+            }
+            //Stack these points onto the anchor points vector
+            anchor_ptsx.push_back(prev_x);
+            anchor_ptsx.push_back(ref_x);
+            anchor_ptsy.push_back(prev_y);
+            anchor_ptsy.push_back(ref_y);
+
+            //Create the remaining anchor points using the anchor point spacing and the current s-coordinate of the ego vehicle
+            for (int i=0; i<N_ANCHORS-2; ++i){
+              vector<double> anchor_pt = getXY(ref_s+(ANCHOR_SPACING*(i+1)), (2+4*LANE_ID), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+              anchor_ptsx.push_back(anchor_pt[0]);
+              anchor_ptsy.push_back(anchor_pt[1]);
+            }
+
+            //Rotate anchor points to car's frame of reference
+            for (int i=0;i<anchor_ptsx.size();++i){
+              //offset the axis origin to the car location
+              double shift_x = anchor_ptsx[i] - ref_x;
+              double shift_y = anchor_ptsy[i] - ref_y;
+
+              //Rotate the waypoint coordinates clockwise by psi
+              //Waypoint coordinates are x, z
+              //Vehicle coordinates are x', z'
+              //Psi is measured positive from x to z
+              //https://en.wikipedia.org/wiki/Transformation_matrix
+              
+              anchor_ptsx[i] = (shift_x * cos(ref_yaw) + shift_y * sin(ref_yaw));
+              anchor_ptsy[i] = (shift_x * -sin(ref_yaw) + shift_y * cos(ref_yaw));
+              //cout<<"Anchor point "<<i+1<<": ("<<anchor_ptsx[i]<<','<<anchor_ptsy[i]<<")\n";
+            }
+
+            //Create the spline
+            spline_traj.set_points(anchor_ptsx, anchor_ptsy); //Spline is created in ego vehicle's frame of reference
+
+            //Pick out points from the spline
+            spline_y_target = spline_traj(SPLINE_X_TARGET);
+            path_horizon = distance(0.0, 0.0, SPLINE_X_TARGET, spline_y_target);
+
+            for (int i=1; i<=N_SPLINE_POINTS-prev_size; ++i){
+              double N = path_horizon/(TIME_INTERVAL*REF_V); //Create the spacing for the points
+              double spline_x_pt_car = SPLINE_X_INCREMENT + (SPLINE_X_TARGET)/N; //Get the next car x-coordinate
+              double spline_y_pt_car = spline_traj(spline_x_pt_car); //Get the next car y-coordinate
+
+              SPLINE_X_INCREMENT = spline_x_pt_car; //increment x position forward
+
+              //Rotate these points back to the global frame of reference
+              double spline_x_pt_global = spline_x_pt_car*cos(ref_yaw) - spline_y_pt_car*sin(ref_yaw);
+              double spline_y_pt_global = spline_x_pt_car*sin(ref_yaw) + spline_y_pt_car*cos(ref_yaw);
+              //offset the points from the ego vehicle reference state
+              spline_x_pt_global += ref_x; 
+              spline_y_pt_global += ref_y;
+
+              next_x_vals.push_back(spline_x_pt_global);
+              next_y_vals.push_back(spline_y_pt_global);
+            }
 
 
           	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
