@@ -1,5 +1,5 @@
-#ifndef TRANSFORMS
-#define TRANSFORMS
+#ifndef TRANSFORMS_H
+#define TRANSFORMS_H
 
 // For converting back and forth between radians and degrees.
 constexpr double pi();

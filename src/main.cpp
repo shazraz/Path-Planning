@@ -11,6 +11,7 @@
 #include "json.hpp"
 #include "spline.h"
 #include "transforms.h"
+#include "obstacles.h"
 
 using namespace std;
 
@@ -46,6 +47,9 @@ int main() {
   string map_file_ = "../data/highway_map.csv";
   // The max s value before wrapping around the track back to 0
   double max_s = 6945.554;
+  int LANE_ID = 1; //Initial lane
+  double REF_V = 0.0; //reference velocity in mph
+
 
   ifstream in_map_(map_file_.c_str(), ifstream::in);
 
@@ -69,7 +73,7 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy, &LANE_ID, &REF_V](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -94,7 +98,7 @@ int main() {
           	double car_s = j[1]["s"];
           	double car_d = j[1]["d"];
           	double car_yaw = j[1]["yaw"];
-          	double car_speed = j[1]["speed"];
+          	double car_speed = j[1]["speed"]; //mph
 
           	// Previous path data given to the Planner
           	auto previous_path_x = j[1]["previous_path_x"];
@@ -109,21 +113,31 @@ int main() {
           	json msgJson;
 
           	//Define all flags and constats
-            int LANE_ID = 1; 
-            double REF_V = 40/2.23694; //Reference velocity in m/s
+
+            double MAX_V = 49; //maximum velocity in mph
             int N_ANCHORS = 5; 
             int ANCHOR_SPACING = 30;
             double SPLINE_X_TARGET = 30; //Distance in meters that the path looks out to
             double SPLINE_X_INCREMENT = 0;
             int N_SPLINE_POINTS = 50;
             double TIME_INTERVAL = 0.02;
+            double LANE_WIDTH = 4.0;
+            double MIN_SAFE_GAP = 40.0; //minimum safe distance to maintain in meters
+            double MAX_ACC = 10.0; //max acceleration in m/s2
+            double MAX_JERK = 10.0; // max jerk in m/s3
+            bool OBSTACLE_TOO_CLOSE = false;
+            double MAX_VEL_CHANGE = MAX_ACC * TIME_INTERVAL * 2.23694; //max permissible change in velocity in mph
+            double PERMISSIBLE_VEL_CHANGE = 0.8 * MAX_VEL_CHANGE;
 
             //Define all variables
             vector<double> next_x_vals; //holds the next global x values
           	vector<double> next_y_vals; //holds the next global y values
+            //vector<Obstacle> obstacles; //holds the detected vehicles
             int prev_size = previous_path_x.size(); //size of the previous path returned from the simulator
             double spline_y_target;
             double path_horizon;
+            double target_v; //target velocity to track
+            
 
             //Start the path with all the remaining points from the previous path
             for(int i=0; i<prev_size; ++i){
@@ -144,6 +158,44 @@ int main() {
             double ref_y = car_y;
             double ref_yaw = deg2rad(car_yaw);
             double ref_s = car_s;
+
+            //Sensor fusion is always a list of 12 vehicles of ID 0-11 in the order in which they are detected, I think.
+            //If the number of detected vehicles is < 12, the corresponding d values are large & negative and S values are > 6000.
+            for(int i=0; i<sensor_fusion.size(); ++i){
+              //cout<<"Obstacle ID: "<<sensor_fusion[i][0]<<" s-dist: "<<(double)sensor_fusion[i][5] - ref_s<<" d: "<<sensor_fusion[i][6]<<endl;
+              Obstacle obstacle;
+
+              obstacle.id = sensor_fusion[i][0];
+              obstacle.x = sensor_fusion[i][1];
+              obstacle.y = sensor_fusion[i][2];
+              obstacle.v = distance(0.0, 0.0, (double)sensor_fusion[i][3], (double)sensor_fusion[i][4]) * 2.23694;
+              obstacle.s = sensor_fusion[i][5];  
+              obstacle.d = sensor_fusion[i][6];
+              obstacle.lane = (int)obstacle.d/LANE_WIDTH;
+              obstacle.distance = obstacle.s - ref_s;
+              //Check if the car is in front of us, in the same lane and closer than the defined safe gap
+              if((0 < obstacle.distance) && (obstacle.distance <= MIN_SAFE_GAP) && (obstacle.lane == LANE_ID)){
+                OBSTACLE_TOO_CLOSE = true;
+                cout<<"Obstacle detected!"<<endl;
+                target_v = obstacle.v;
+                break;
+              }
+
+            }
+
+            if(OBSTACLE_TOO_CLOSE && (REF_V > target_v)){
+                REF_V -= 0.2*PERMISSIBLE_VEL_CHANGE; //gradually slow down
+                //cout<<"Decreasing velocity"<<endl;
+              }
+
+            /*if(OBSTACLE_TOO_CLOSE){
+              REF_V -= PERMISSIBLE_VEL_CHANGE;
+              //cout<<"Decreasing velocity"<<endl;
+            }
+            else if (REF_V < MAX_V){
+              REF_V += PERMISSIBLE_VEL_CHANGE;
+              //cout<<"Increasing velocity by: "<<PERMISSIBLE_VEL_CHANGE<<endl;
+            }*/
 
             //Define variables to hold the state previous to the reference state
             double prev_x;
@@ -205,7 +257,13 @@ int main() {
             path_horizon = distance(0.0, 0.0, SPLINE_X_TARGET, spline_y_target);
 
             for (int i=1; i<=N_SPLINE_POINTS-prev_size; ++i){
-              double N = path_horizon/(TIME_INTERVAL*REF_V); //Create the spacing for the points
+              
+              if (REF_V < MAX_V && !OBSTACLE_TOO_CLOSE){
+                REF_V += PERMISSIBLE_VEL_CHANGE;
+                //cout<<"Increasing velocity by: "<<PERMISSIBLE_VEL_CHANGE<<endl;
+              }
+
+              double N = path_horizon/(TIME_INTERVAL*REF_V/2.23694); //Create the spacing for the points
               double spline_x_pt_car = SPLINE_X_INCREMENT + (SPLINE_X_TARGET)/N; //Get the next car x-coordinate
               double spline_y_pt_car = spline_traj(spline_x_pt_car); //Get the next car y-coordinate
 
