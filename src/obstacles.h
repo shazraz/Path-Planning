@@ -9,6 +9,7 @@ struct Obstacle {
 	double s;
 	double d;
 	double distance; //distance in frenet coordinates (s)
+	double future_distance;
 	int lane;
 
 };

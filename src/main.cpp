@@ -117,17 +117,19 @@ int main() {
             double MAX_V = 49; //maximum velocity in mph
             int N_ANCHORS = 5; 
             int ANCHOR_SPACING = 30;
-            double SPLINE_X_TARGET = 30; //Distance in meters that the path looks out to
+            double SPLINE_X_TARGET = 80; //Distance in meters that the path looks out to
             double SPLINE_X_INCREMENT = 0;
-            int N_SPLINE_POINTS = 50;
+            int N_SPLINE_POINTS = 40;
             double TIME_INTERVAL = 0.02;
             double LANE_WIDTH = 4.0;
-            double MIN_SAFE_GAP = 40.0; //minimum safe distance to maintain in meters
+            double MIN_SAFE_GAP = 30.0; //minimum safe distance to maintain in meters
             double MAX_ACC = 10.0; //max acceleration in m/s2
             double MAX_JERK = 10.0; // max jerk in m/s3
             bool OBSTACLE_TOO_CLOSE = false;
             double MAX_VEL_CHANGE = MAX_ACC * TIME_INTERVAL * 2.23694; //max permissible change in velocity in mph
             double PERMISSIBLE_VEL_CHANGE = 0.8 * MAX_VEL_CHANGE;
+            bool LEFT_LANE_CLEAR = true;
+            bool RIGHT_LANE_CLEAR = true;
 
             //Define all variables
             vector<double> next_x_vals; //holds the next global x values
@@ -137,6 +139,8 @@ int main() {
             double spline_y_target;
             double path_horizon;
             double target_v; //target velocity to track
+            double ego_end_s;
+            vector<Obstacle> obstacles;
             
 
             //Start the path with all the remaining points from the previous path
@@ -158,50 +162,74 @@ int main() {
             double ref_y = car_y;
             double ref_yaw = deg2rad(car_yaw);
             double ref_s = car_s;
+            //Define variables to hold the state previous to the reference state
+            double prev_x;
+            double prev_y;
+
+            if (prev_size>0){
+              ref_s = end_path_s;
+            }
+
 
             //Sensor fusion is always a list of 12 vehicles of ID 0-11 in the order in which they are detected, I think.
             //If the number of detected vehicles is < 12, the corresponding d values are large & negative and S values are > 6000.
             for(int i=0; i<sensor_fusion.size(); ++i){
               //cout<<"Obstacle ID: "<<sensor_fusion[i][0]<<" s-dist: "<<(double)sensor_fusion[i][5] - ref_s<<" d: "<<sensor_fusion[i][6]<<endl;
-              Obstacle obstacle;
-
-              obstacle.id = sensor_fusion[i][0];
-              obstacle.x = sensor_fusion[i][1];
-              obstacle.y = sensor_fusion[i][2];
-              obstacle.v = distance(0.0, 0.0, (double)sensor_fusion[i][3], (double)sensor_fusion[i][4]) * 2.23694;
-              obstacle.s = sensor_fusion[i][5];  
+              //Loop over all sensor fusion data and collect valid detected obstacles
+              Obstacle obstacle;  
               obstacle.d = sensor_fusion[i][6];
-              obstacle.lane = (int)obstacle.d/LANE_WIDTH;
-              obstacle.distance = obstacle.s - ref_s;
-              //Check if the car is in front of us, in the same lane and closer than the defined safe gap
-              if((0 < obstacle.distance) && (obstacle.distance <= MIN_SAFE_GAP) && (obstacle.lane == LANE_ID)){
-                OBSTACLE_TOO_CLOSE = true;
-                cout<<"Obstacle detected!"<<endl;
-                target_v = obstacle.v;
-                break;
-              }
+              
+              if (obstacle.d >= 0){
+                obstacle.id = sensor_fusion[i][0];
+                obstacle.x = sensor_fusion[i][1];
+                obstacle.y = sensor_fusion[i][2];
+                obstacle.v = distance(0.0, 0.0, (double)sensor_fusion[i][3], (double)sensor_fusion[i][4]) * 2.23694;
+                obstacle.s = sensor_fusion[i][5];
+                obstacle.lane = (int)obstacle.d/LANE_WIDTH;
+                obstacle.distance = obstacle.s - car_s;
+                obstacle.future_distance = obstacle.s + TIME_INTERVAL*(double)prev_size*obstacle.v/2.23694 - ref_s; 
+                obstacles.push_back(obstacle);
+                //Check for obstacles one lane to the right within the safe gap or if ego is in rightmost lane
+                if (((LANE_ID+1 == obstacle.lane) && (fabs(obstacle.distance) < MIN_SAFE_GAP)) || (LANE_ID==2)){
+                  RIGHT_LANE_CLEAR = false;
+                  //cout<<"Found obstacle in right lane at distance: "<<obstacle.distance<<endl;
+                }
+                //Check for obstacles one lane to the left within the safe gap or if ego is in leftmost lane      
+                if (((LANE_ID-1 == obstacle.lane) && (fabs(obstacle.distance) < MIN_SAFE_GAP)) || (LANE_ID==0)){
+                  LEFT_LANE_CLEAR = false;
+                  //cout<<"Found obstacle in left lane at distance: "<<obstacle.distance<<endl;
+                }
+              } 
+            }
 
+            for(int i=0; i<obstacles.size(); ++i){
+
+              //Check if the car is in front of us, in the same lane and closer than the defined safe gap
+              if((0 < obstacles[i].future_distance) && (obstacles[i].future_distance <= MIN_SAFE_GAP) && (obstacles[i].lane == LANE_ID)){
+                //Move to the left lane
+                if(LEFT_LANE_CLEAR && (LANE_ID != 0)){
+                  cout<<"My lane is: "<<LANE_ID<<endl;
+                  LANE_ID -= 1;
+                  cout << "Changing to Lane: "<<LANE_ID<<endl;
+                } //otherwise move to the right lane
+                else if(RIGHT_LANE_CLEAR && (LANE_ID != 2)){
+                  cout<<"My lane is: "<<LANE_ID<<endl;
+                  LANE_ID += 1;
+                  cout << "Changing to Lane: "<<LANE_ID<<endl;;
+                } //otherwise slow down
+                else{
+                  OBSTACLE_TOO_CLOSE = true;
+                  cout<<"Tracking obstacle velocity!"<<endl;
+                  target_v = obstacles[i].v;
+                  break;  
+                }
+                
+              }
             }
 
             if(OBSTACLE_TOO_CLOSE && (REF_V > target_v)){
                 REF_V -= 0.2*PERMISSIBLE_VEL_CHANGE; //gradually slow down
-                //cout<<"Decreasing velocity"<<endl;
               }
-
-            /*if(OBSTACLE_TOO_CLOSE){
-              REF_V -= PERMISSIBLE_VEL_CHANGE;
-              //cout<<"Decreasing velocity"<<endl;
-            }
-            else if (REF_V < MAX_V){
-              REF_V += PERMISSIBLE_VEL_CHANGE;
-              //cout<<"Increasing velocity by: "<<PERMISSIBLE_VEL_CHANGE<<endl;
-            }*/
-
-            //Define variables to hold the state previous to the reference state
-            double prev_x;
-            double prev_y;
-
-            //cout<<"Previous path size is: "<<prev_size<<endl;
 
             //Create an additional point based on current reference state if the previous path has one point left
             if (prev_size < 2){
@@ -216,8 +244,8 @@ int main() {
               ref_x = previous_path_x[prev_size-1];
               ref_y = previous_path_y[prev_size-1];
               ref_yaw = atan2(ref_y-prev_y, ref_x-prev_x);
-              prev_x = previous_path_x[prev_size-3];
-              prev_y = previous_path_y[prev_size-3];
+              prev_x = previous_path_x[prev_size-2];
+              prev_y = previous_path_y[prev_size-2];
             }
             //Stack these points onto the anchor points vector
             anchor_ptsx.push_back(prev_x);
