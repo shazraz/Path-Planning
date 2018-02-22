@@ -1,7 +1,7 @@
 # Path Planning
 
 ## 1. Introduction
-This model implements a path planner in C++ using the splines library and waypoints provided by a simulator
+This model implements a path planner in C++ using vehicle localization and sensor fusion data provided by a simulator. The path is used to navigate the vehicle on a highway while avoiding obstacles on the road.
 
 ## 2. Project Environment
 The project was built using the Ubuntu 16-04 bash shell in Windows 10. Instructions to set this up can be found [here](https://www.howtogeek.com/249966/how-to-install-and-use-the-linux-bash-shell-on-windows-10/). The following dependencies need to be in place to build and execute the project.
@@ -30,7 +30,7 @@ The highway's waypoints loop around so the frenet s value, distance along the ro
 
 ### 3.2 Simulator Data
 
-Here is the data provided from the Simulator to the C++ Program
+The data provided from the simulator is as follows:
 
 #### Main car's localization Data (No Noise)
 
@@ -63,6 +63,11 @@ the path has processed since last time.
 
 #### Sensor Fusion Data, a list of all other car's attributes on the same side of the road. (No Noise)
 
-["sensor_fusion"] A 2d vector of cars and then that car's [car's unique ID, car's x position in map coordinates, car's y position in map coordinates, car's x velocity in m/s, car's y velocity in m/s, car's s position in frenet coordinates, car's d position in frenet coordinates.]
+["sensor_fusion"] A 2d vector of cars and then that car's unique ID, car's x position in map coordinates, car's y position in map coordinates, car's x velocity in m/s, car's y velocity in m/s, car's s position in frenet coordinates, car's d position in frenet coordinates.
 
 ## 4. Path Planning
+The path planner generates a trajectory for the vehicle to follow using waypoints in a map. When the vehicle is initialized, a number of anchor points are created in global coordinates, defined by ```N_ANCHORS```. Two of these anchor points consist of the vehicles current state and a state shifted back in time corresponding to the vehicle headings. The other three anchor points are projected into the path ahead using ```ANCHOR_SPACING```. The splines library is then used to fit a spline to these anchor points.  ```N_SPLINE_POINTS``` are then extracted from this spline upto a distance of ```path_horizon``` from the vehicle. These points form the vehicle trajectory after some coordinate transformations from vehicle to map coordinates. The use of trajectory points extracted from a spline allow for smooth navigation within a lane and when changing lanes.
+
+The vehicle analyzes the sensor fusion data returned from the simulator to determine whether it is safe to perform a lane change. The sensor fusion data is parsed to identify vehicles detected around the ego vehicle. The positon of the detected vehicles, referred to as obstacles, is projected forward in time to the end of the ego vehicle's planned path. If the obstacle is in an adjacent lane and less than ```MIN_SAFE_GAP``` ahead or ```MIN_SAFE_GAP/2``` behind the ego vehicle, then a lane change maneuver is considered dangerous. In this case, the ```RIGHT_LANE_CLEAR``` or ```LEFT_LANE_CLEAR``` flags are set to False as applicable. 
+
+When an obstacle is detected in the path of the vehicle and is at least ```MIN_SAFE_GAP``` away, the ego vehicle checks to see whether a lane change to the left or right is possible depending on the lane change clear flags and the current lane of the ego vehicle. Left lane changes are preferred over right lane changes to position the vehicle in a faster moving lane. Alternatively, if lane changes are not possible due to the close proximity of obstacles, the ego vehicle tracks the velocity of the obstacle in it's lane until a safe gap is available in an adjacent lane to perform a lane change. 
