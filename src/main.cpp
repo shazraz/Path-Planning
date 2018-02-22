@@ -134,13 +134,12 @@ int main() {
             //Define all variables
             vector<double> next_x_vals; //holds the next global x values
           	vector<double> next_y_vals; //holds the next global y values
-            //vector<Obstacle> obstacles; //holds the detected vehicles
             int prev_size = previous_path_x.size(); //size of the previous path returned from the simulator
             double spline_y_target;
             double path_horizon;
             double target_v; //target velocity to track
             double ego_end_s;
-            vector<Obstacle> obstacles;
+            vector<Obstacle> obstacles; //holds the detected vehicles
             
 
             //Start the path with all the remaining points from the previous path
