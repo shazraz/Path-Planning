@@ -114,7 +114,7 @@ int main() {
 
           	//Define all flags and constats
 
-            double MAX_V = 49; //maximum velocity in mph
+            double MAX_V = 49.5; //maximum velocity in mph
             int N_ANCHORS = 5; 
             int ANCHOR_SPACING = 30;
             double SPLINE_X_TARGET = 80; //Distance in meters that the path looks out to
@@ -122,7 +122,7 @@ int main() {
             int N_SPLINE_POINTS = 40;
             double TIME_INTERVAL = 0.02;
             double LANE_WIDTH = 4.0;
-            double MIN_SAFE_GAP = 30.0; //minimum safe distance to maintain in meters
+            double MIN_SAFE_GAP = 40.0; //minimum safe distance to maintain in meters
             double MAX_ACC = 10.0; //max acceleration in m/s2
             double MAX_JERK = 10.0; // max jerk in m/s3
             bool OBSTACLE_TOO_CLOSE = false;
@@ -189,18 +189,22 @@ int main() {
                 obstacle.distance = obstacle.s - car_s;
                 obstacle.future_distance = obstacle.s + TIME_INTERVAL*(double)prev_size*obstacle.v/2.23694 - ref_s; 
                 obstacles.push_back(obstacle);
-                //Check for obstacles one lane to the right within the safe gap or if ego is in rightmost lane
-                if (((LANE_ID+1 == obstacle.lane) && (fabs(obstacle.distance) < MIN_SAFE_GAP)) || (LANE_ID==2)){
+                //Check for obstacles one lane to the right within the safe gap or safe gap/2 for vehicles behind us (more aggressive on lane changes)
+                if ((LANE_ID+1 == obstacle.lane) && (((fabs(obstacle.future_distance) < MIN_SAFE_GAP) && (obstacle.future_distance>0)) || ((fabs(obstacle.future_distance) < MIN_SAFE_GAP/2.0) && (obstacle.future_distance<0)))  ){
+                  cout<<"Found obstacle in lane "<<obstacle.lane<<" at distance: "<<obstacle.future_distance<<endl;
                   RIGHT_LANE_CLEAR = false;
-                  //cout<<"Found obstacle in right lane at distance: "<<obstacle.distance<<endl;
-                }
-                //Check for obstacles one lane to the left within the safe gap or if ego is in leftmost lane      
-                if (((LANE_ID-1 == obstacle.lane) && (fabs(obstacle.distance) < MIN_SAFE_GAP)) || (LANE_ID==0)){
+
+                  }
+                  
+                //Check for obstacles one lane to the left within the safe gap or safe gap/2 for vehicles behind us (more aggressive on lane changes)      
+                if ((LANE_ID-1 == obstacle.lane) && (((fabs(obstacle.future_distance) < MIN_SAFE_GAP) && (obstacle.future_distance>0)) || ((fabs(obstacle.future_distance) < MIN_SAFE_GAP/2.0) && (obstacle.future_distance<0)))  ){
+                  cout<<"Found obstacle in lane "<<obstacle.lane<<" at distance: "<<obstacle.future_distance<<endl;
                   LEFT_LANE_CLEAR = false;
-                  //cout<<"Found obstacle in left lane at distance: "<<obstacle.distance<<endl;
+  
+                  }
+                  
                 }
               } 
-            }
 
             for(int i=0; i<obstacles.size(); ++i){
 
@@ -228,7 +232,11 @@ int main() {
             }
 
             if(OBSTACLE_TOO_CLOSE && (REF_V > target_v)){
-                REF_V -= 0.2*PERMISSIBLE_VEL_CHANGE; //gradually slow down
+                REF_V -= 0.3*PERMISSIBLE_VEL_CHANGE; //gradually slow down
+              }
+            else if (REF_V < MAX_V && !OBSTACLE_TOO_CLOSE){
+                REF_V += PERMISSIBLE_VEL_CHANGE;
+                //cout<<"Increasing velocity by: "<<PERMISSIBLE_VEL_CHANGE<<endl;
               }
 
             //Create an additional point based on current reference state if the previous path has one point left
@@ -262,6 +270,9 @@ int main() {
 
             //Rotate anchor points to car's frame of reference
             for (int i=0;i<anchor_ptsx.size();++i){
+              //View the original anchor points
+              /*cout<<"Anchor x: "<<anchor_ptsx[i]<<" y: "<<anchor_ptsy[i]<<endl;
+              cout<<"-------------"<<endl;*/
               //offset the axis origin to the car location
               double shift_x = anchor_ptsx[i] - ref_x;
               double shift_y = anchor_ptsy[i] - ref_y;
@@ -285,12 +296,11 @@ int main() {
             path_horizon = distance(0.0, 0.0, SPLINE_X_TARGET, spline_y_target);
 
             for (int i=1; i<=N_SPLINE_POINTS-prev_size; ++i){
-              
-              if (REF_V < MAX_V && !OBSTACLE_TOO_CLOSE){
-                REF_V += PERMISSIBLE_VEL_CHANGE;
+              //Causes unpredictable errors during startup
+              /*if (REF_V < MAX_V && !OBSTACLE_TOO_CLOSE){
+                REF_V += 0.8*PERMISSIBLE_VEL_CHANGE;
                 //cout<<"Increasing velocity by: "<<PERMISSIBLE_VEL_CHANGE<<endl;
-              }
-
+              }*/
               double N = path_horizon/(TIME_INTERVAL*REF_V/2.23694); //Create the spacing for the points
               double spline_x_pt_car = SPLINE_X_INCREMENT + (SPLINE_X_TARGET)/N; //Get the next car x-coordinate
               double spline_y_pt_car = spline_traj(spline_x_pt_car); //Get the next car y-coordinate
@@ -307,7 +317,6 @@ int main() {
               next_x_vals.push_back(spline_x_pt_global);
               next_y_vals.push_back(spline_y_pt_global);
             }
-
 
           	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
           	msgJson["next_x"] = next_x_vals;
